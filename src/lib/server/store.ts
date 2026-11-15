@@ -371,12 +371,13 @@ export class Store {
     return ids.map((id) => this.entry(id)).filter((entry) => entry !== null);
   }
 
-  // A page kept from its link. If some feed already has it, that entry is
+  // A page kept from its link, at the address the page gives as its own. If
+  // some entry already has it, at that address or the link, that entry is
   // kept instead of a second copy.
-  keepPage(url: string, title: string): Entry {
+  keepPage(url: string, title: string, link = url): Entry {
     const known = this.db
-      .query<{ id: number }, [string]>('SELECT id FROM entries WHERE url = ? ORDER BY id LIMIT 1')
-      .get(url);
+      .query<{ id: number }, [string, string]>('SELECT id FROM entries WHERE url IN (?, ?) ORDER BY id LIMIT 1')
+      .get(url, link);
     if (known) return this.keep([known.id], true)[0]!;
     const now = Date.now();
     const { id } = this.db

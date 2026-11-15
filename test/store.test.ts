@@ -176,6 +176,17 @@ test('a link kept is stored once: an entry a feed already has is kept instead', 
   expect(store.sources().map((source) => source.label)).toEqual(['Example']);
 });
 
+test('a link kept at the address its page gives finds the entry stored at the link, and the other way round', () => {
+  saveItems(item('a', { url: 'https://example.com/a?utm_source=rss' }));
+  const viaFeed = store.keepPage('https://example.com/a', 'a', 'https://example.com/a?utm_source=rss');
+  expect(viaFeed).toMatchObject({ title: 'Post a', feed: 'Example' });
+  const page = store.keepPage('https://youtube.com/watch?v=1', 'Video', 'https://youtube.com/watch?v=1&index=2');
+  expect(store.keepPage('https://youtube.com/watch?v=1', 'Video', 'https://youtube.com/watch?v=1&index=3').id).toBe(
+    page.id,
+  );
+  expect(store.entries(scopes.kept)).toHaveLength(2);
+});
+
 test('a database from when entries had a state, bookmarked one of them, keeps every entry, what was kept and the backlog', () => {
   const path = `${Bun.env.TMPDIR ?? '/tmp'}/lagan-migrate-${process.pid}.sqlite`;
   const old = new Database(path, { create: true });

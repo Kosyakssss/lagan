@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test';
 import { cleanTitle, parseDate, parseFeed, plain } from '../src/lib/server/parse';
-import { linkedFeed, titleOf } from '../src/lib/server/sites';
+import { canonicalOf, linkedFeed, titleOf } from '../src/lib/server/sites';
 
 const BASE = 'https://example.com/feed.xml';
 const parse = (xml: string) => parseFeed(new TextEncoder().encode(xml), 'application/xml', BASE);
@@ -112,4 +112,22 @@ test("a page's feeds are found from its links, with relative addresses made whol
   expect(linkedFeed(html, 'https://example.com/post/1')).toBe('https://example.com/feed.xml');
   expect(titleOf(html)).toBe('Blog & notes');
   expect(titleOf('<meta property="og:title" content="Shared title">')).toBe('Shared title');
+});
+
+test("a page's own address is the canonical one it names, unless that is another site or just the front page", () => {
+  const link = 'https://www.youtube.com/watch?v=1&list=WL&index=3';
+  expect(canonicalOf('<link rel="canonical" href="https://www.youtube.com/watch?v=1">', link)).toBe(
+    'https://www.youtube.com/watch?v=1',
+  );
+  expect(canonicalOf(`<link href='/post' rel='canonical'>`, 'https://m.example.com/post?ref=x')).toBe(
+    'https://m.example.com/post',
+  );
+  expect(
+    canonicalOf('<link rel="canonical" href="https://www.example.com/post">', 'https://example.com/post?a=1'),
+  ).toBe('https://www.example.com/post');
+  expect(canonicalOf('<link rel="canonical" href="https://other.example/post">', 'https://example.com/post')).toBe(
+    undefined,
+  );
+  expect(canonicalOf('<link rel="canonical" href="https://example.com/">', 'https://example.com/post')).toBe(undefined);
+  expect(canonicalOf('<link rel="alternate" href="/feed.xml">', 'https://example.com/post')).toBe(undefined);
 });

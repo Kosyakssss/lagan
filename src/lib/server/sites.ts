@@ -46,11 +46,30 @@ export function linkedFeed(html: string, base: string): string | undefined {
   }
 }
 
-export async function pageTitle(url: string): Promise<string> {
+const siteOf = (url: URL) => url.hostname.replace(/^(www|m)\./, '');
+
+// The address a page gives as its own, so links that differ only in what is
+// added to them, a playlist or a tracking tag, are one page. Not trusted when
+// it is another site, or the front page standing in for every page.
+export function canonicalOf(html: string, base: string): string | undefined {
+  const page = URL.parse(base);
+  for (const [tag] of html.matchAll(/<link\b[^>]*>/gi)) {
+    const link = attributes(tag);
+    if (!(link.rel ?? '').toLowerCase().split(/\s+/).includes('canonical') || !link.href) continue;
+    const url = URL.parse(link.href, base);
+    if (!page || !url || !['http:', 'https:'].includes(url.protocol) || siteOf(url) !== siteOf(page)) return;
+    if (url.pathname === '/' && !url.search && page.pathname !== '/') return;
+    return url.href;
+  }
+}
+
+// What keeping a link stores: the page's own address and its title.
+export async function pageToKeep(link: string): Promise<{ url: string; title: string }> {
   try {
-    return titleOf((await readPage(url)).html);
+    const page = await readPage(link);
+    return { url: canonicalOf(page.html, page.url) ?? link, title: titleOf(page.html) };
   } catch {
-    return '';
+    return { url: link, title: '' };
   }
 }
 

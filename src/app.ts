@@ -6,7 +6,7 @@ import { linksIn } from '#lib/links.ts';
 import type { Lagan } from '#lib/server/lagan.ts';
 import { errorText } from '#lib/server/fetch.ts';
 import { readOpml, sourceFor, writeOpml } from '#lib/server/opml.ts';
-import { findFeed, pageTitle } from '#lib/server/sites.ts';
+import { findFeed, pageToKeep } from '#lib/server/sites.ts';
 import { scopes, type Source } from '#lib/server/store.ts';
 import { html, type Html } from '#lib/html.ts';
 import { address, pages, type Edited, type Found } from './pages';
@@ -156,8 +156,8 @@ export function app({ store, wake, follow }: Lagan, base = '') {
       POST: async (request) => {
         const links = linksIn(text(await request.formData(), 'links')).slice(0, MOST_LINKS);
         if (!links.length) return see(saying(at('/kept'), 'No links in that.'));
-        const titles = await Promise.all(links.map(pageTitle));
-        links.forEach((url, index) => store.keepPage(url, titles[index]!));
+        const found = await Promise.all(links.map(pageToKeep));
+        found.forEach((page, index) => store.keepPage(page.url, page.title, links[index]));
         return see(saying(at('/kept'), links.length === 1 ? 'Kept.' : `Kept ${links.length}.`));
       },
     },
