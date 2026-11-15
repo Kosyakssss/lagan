@@ -1,5 +1,7 @@
 // Everything that reads or writes the database.
 import { Database, type SQLQueryBindings } from 'bun:sqlite';
+import { mkdirSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { displayTitle } from '../format';
 import type { FetchResult } from './fetch';
 
@@ -124,6 +126,7 @@ export class Store {
   private db: Database;
 
   constructor(path: string) {
+    if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true }); // a fresh copy has no data folder yet
     this.db = new Database(path, { create: true });
     this.db.run('PRAGMA journal_mode = WAL');
     this.db.run('PRAGMA busy_timeout = 5000');
