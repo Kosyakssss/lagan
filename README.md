@@ -4,7 +4,7 @@
 
 Lagan is an old word of maritime law: of what is lost at sea, flotsam floats, jetsam sinks, and lagan sinks with a buoy marking where it lies.
 
-Lagan is a feed reader for one person. It follows RSS, Atom and JSON feeds, YouTube channels and Bluesky accounts, and shows the hundred posts that arrived last, newest first, as plain pages that load at once on a phone. What you keep is your lagan: marked, and there when you come back for it, with links pasted in from anywhere. There is no unread count; a link you opened is just a different colour.
+Lagan is a feed tracker for one person. It follows RSS, Atom and JSON feeds, YouTube channels and Bluesky accounts, and shows the hundred posts that arrived last, newest first, as plain pages that load at once on a phone. What you keep is your lagan: marked, and there when you come back for it, with links pasted in from anywhere. There is no unread count; a link you opened is just a different colour.
 
 - **Follow** a feed from its link, a site's link, or a handle. Lagan finds the feed, shows what it found before following, and opens it with its posts.
 - **Edit** a feed in place: its name, its address, words that hide its posts, and text taken out of its titles.
