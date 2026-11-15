@@ -71,6 +71,55 @@ test('two posts with the same title and date in one fetch are both kept', () => 
   expect(store.entries(scopes.feed(feed.id))).toHaveLength(2);
 });
 
+test('a post the feed renames, under a new id at the same link, shows its new name', () => {
+  saveItems(item('How things win', { url: 'https://example.com/moats' }));
+  saveItems(item('Many ways to win', { url: 'https://example.com/moats', title: 'Many ways to win' }));
+  expect(titles(scopes.feed(feed.id))).toEqual(['Many ways to win']);
+});
+
+test('what the feed now says of a post replaces what it said before: an untitled post shows its text', () => {
+  saveItems(item('a', { title: 'Untitled' }));
+  saveItems(item('a', { title: '', text: 'A short note' }));
+  expect(store.entries(scopes.feed(feed.id))).toMatchObject([{ title: '', text: 'A short note' }]);
+});
+
+test('an update posted at the link of what it updates is a post of its own', () => {
+  saveItems(item('a', { url: 'https://example.com/uses', title: 'What I use' }));
+  saveItems(
+    item('a', { url: 'https://example.com/uses', title: 'What I use' }),
+    item('a.2', { url: 'https://example.com/uses', title: 'What I use, updated', published: JAN + DAY }),
+  );
+  expect(titles(scopes.feed(feed.id))).toEqual(['What I use, updated', 'What I use']);
+});
+
+test('a new post at a link an older post used is new, even once the older one has left the feed', () => {
+  saveItems(item('first', { url: 'https://example.com/', title: 'Episode 1' }));
+  saveItems(item('second', { url: 'https://example.com/', title: 'Episode 2', published: JAN + DAY }));
+  expect(titles(scopes.feed(feed.id))).toEqual(['Episode 2', 'Episode 1']);
+});
+
+test("a page kept from its link that the feed then brings becomes the feed's entry, kept, arriving with it", () => {
+  saveItems(item('backlog'));
+  setSystemTime(JAN + 10 * DAY);
+  store.keepPage('https://example.com/a', 'a - Example');
+  saveItems(item('b', { published: JAN + 2 * DAY }));
+  setSystemTime(JAN + 20 * DAY);
+  saveItems(item('a', { published: JAN + DAY }));
+  expect(store.entries(scopes.latest)).toMatchObject([
+    { title: 'Post a', feed: 'Example', kept: 1, published_at: JAN + DAY },
+    { title: 'Post b' },
+  ]);
+  expect(titles(scopes.kept)).toEqual(['Post a']);
+});
+
+test('a kept page a newly followed feed brings stays where it was, though the rest of that first fetch is backlog', () => {
+  saveItems(item('b'));
+  store.keepPage('https://elsewhere.example/a', 'Kept');
+  const other = store.addSource('rss', 'https://elsewhere.example/feed', 'Elsewhere');
+  store.save(store.source(other)!, result(item('a', { url: 'https://elsewhere.example/a' }), item('c')), 0, 0);
+  expect(store.entries(scopes.latest)).toMatchObject([{ title: 'Post a', feed: 'Elsewhere', kept: 1 }]);
+});
+
 test('impossible dates fall back to now', () => {
   const before = Date.now();
   saveItems(item('a', { published: Date.now() + 10 * 86_400_000 }));
@@ -272,6 +321,29 @@ test('a database from before arrivals were noted lists what it has as before, an
     expect(migrated.entries(scopes.latest).map((entry) => entry.title)).toEqual(['Newer', 'Older']);
     migrated.save(migrated.source(1)!, result(item('late', { published: JAN })), 0, 0);
     expect(migrated.entries(scopes.latest).map((entry) => entry.title)).toEqual(['Post late', 'Newer', 'Older']);
+  } finally {
+    for (const suffix of ['', '-wal', '-shm'])
+      Bun.file(path + suffix)
+        .delete()
+        .catch(() => {});
+  }
+});
+
+test('a database from when a feed could have one post per link takes an update posted at the link of what it updates', () => {
+  const path = `${Bun.env.TMPDIR ?? '/tmp'}/lagan-links-${process.pid}.sqlite`;
+  new Store(path).addSource('rss', 'https://example.com/feed', 'Example');
+  const old = new Database(path);
+  old.run(`CREATE UNIQUE INDEX source_url ON entries(source_id, url) WHERE url <> ''`);
+  old.close();
+  try {
+    store = new Store(path);
+    feed = store.sources()[0]!;
+    saveItems(item('a', { url: 'https://example.com/uses' }));
+    saveItems(
+      item('a', { url: 'https://example.com/uses' }),
+      item('a.2', { url: 'https://example.com/uses', title: 'Updated', published: JAN + DAY }),
+    );
+    expect(store.entries(scopes.feed(feed.id))).toHaveLength(2);
   } finally {
     for (const suffix of ['', '-wal', '-shm'])
       Bun.file(path + suffix)

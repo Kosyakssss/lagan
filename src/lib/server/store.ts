@@ -82,7 +82,7 @@ CREATE TABLE IF NOT EXISTS cuts (
   PRIMARY KEY (source_id, text)
 ) STRICT;
 CREATE UNIQUE INDEX IF NOT EXISTS source_guid ON entries(source_id, guid) WHERE guid <> '';
-CREATE UNIQUE INDEX IF NOT EXISTS source_url ON entries(source_id, url) WHERE url <> '';
+CREATE INDEX IF NOT EXISTS by_url ON entries(url) WHERE url <> '';
 CREATE INDEX IF NOT EXISTS arrived ON entries(arrived_at DESC, published_at DESC, id DESC) WHERE backlog = 0;
 CREATE INDEX IF NOT EXISTS kept ON entries(published_at DESC, id DESC) WHERE kept = 1;
 CREATE INDEX IF NOT EXISTS by_source ON entries(source_id, published_at DESC, id DESC);
@@ -154,6 +154,9 @@ export class Store {
         this.db.run('UPDATE entries SET arrived_at = published_at');
         this.db.run('DROP INDEX IF EXISTS latest');
       })();
+    // A feed could once have one post per link; now an update can be posted at
+    // the link of what it updates.
+    if (columns.has('backlog')) this.db.run('DROP INDEX IF EXISTS source_url');
     if (!columns.size || columns.has('backlog')) return void this.db.run(SCHEMA);
     const kept = columns.has('bookmarked') ? 'bookmarked' : `state = 'bookmarked'`;
     const sources = this.db.query<{ sql: string }, []>(`SELECT sql FROM sqlite_master WHERE name = 'sources'`).get();
@@ -236,7 +239,9 @@ export class Store {
     );
   }
 
-  // Stores a fetch: its entries, and when to fetch next.
+  // Stores a fetch: its entries, and when to fetch next. A post the feed
+  // brings again takes the link, title and text the feed gives it now, so a
+  // post renamed or corrected shows as it is.
   save(source: Source, result: FetchResult, failures: number, nextAt: number): void {
     const now = Date.now();
     const backlog = source.fetched_at === null ? 1 : 0; // a feed's first fetch is its backlog
@@ -244,37 +249,47 @@ export class Store {
     const allSameDate = result.items.length > 3 && dates.size === 1;
     const current = new Set(result.items.map((item) => item.guid));
 
-    const moved = this.db.query<{ id: number; guid: string }, [number, string, number, string]>(
-      'SELECT id, guid FROM entries WHERE source_id = ? AND title = ? AND published_at = ? AND guid <> ?',
+    // Which stored post an item is: the one with its id, or else, as some sites
+    // change ids when they redeploy or rename a post, one that shares two of its
+    // link, title and date. Never one still in this very fetch under its own id:
+    // that is another post, like an update posted at the link of what it updates.
+    const same = this.db.query<{ id: number; guid: string }, [number, string, string, string, number | null]>(
+      `SELECT id, guid FROM entries WHERE source_id = ?1 AND (guid = ?2
+         OR (url <> '' AND url = ?3) + (title <> '' AND title = ?4) + coalesce(published_at = ?5, 0) >= 2)
+       ORDER BY id DESC`,
     );
-    const repoint = this.db.query('UPDATE OR IGNORE entries SET guid = ?, url = ? WHERE id = ?');
+    const update = this.db.query(
+      `UPDATE OR IGNORE entries SET guid = ?1, url = ?2, title = ?3, text = ?4
+       WHERE id = ?5 AND (guid <> ?1 OR url <> ?2 OR title <> ?3 OR text <> ?4)`,
+    );
+    // A page kept from its link that this feed now brings becomes the feed's
+    // entry, still kept, arriving when the feed's would. From a feed's first
+    // fetch, which arrives nowhere, it stays where it was.
+    const page = this.db.query<{ id: number }, [string]>(
+      `SELECT e.id FROM entries e JOIN sources s ON s.id = e.source_id
+       WHERE s.kind = 'page' AND e.url <> '' AND e.url = ? ORDER BY e.id LIMIT 1`,
+    );
+    const adopt = this.db.query(
+      `UPDATE OR IGNORE entries SET source_id = ?1, guid = ?2, url = ?3, published_at = ?4, title = ?5, text = ?6,
+         arrived_at = CASE WHEN ?7 THEN arrived_at ELSE ?8 END, backlog = CASE WHEN kept THEN 0 ELSE ?7 END
+       WHERE id = ?9`,
+    );
     const insert = this.db.query(
       `INSERT OR IGNORE INTO entries (source_id, guid, url, published_at, arrived_at, backlog, title, text) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     );
 
     this.db.transaction(() => {
       for (const item of result.items) {
-        // Some sites change every item's id when they redeploy. The same title at
-        // the same moment in the same feed is the same post, unless the other one
-        // is still in this very fetch.
-        const old =
-          item.title && item.published
-            ? moved.all(source.id, item.title, item.published, item.guid).find((row) => !current.has(row.guid))
-            : undefined;
         const usable =
           item.published !== null && item.published > EARLIEST_DATE && item.published <= now + DAY && !allSameDate;
-        if (old) repoint.run(item.guid, item.url, old.id);
-        else
-          insert.run(
-            source.id,
-            item.guid,
-            item.url,
-            usable ? item.published : now,
-            now,
-            backlog,
-            item.title,
-            item.text,
-          );
+        const published = usable ? item.published! : now;
+        const rows = same.all(source.id, item.guid, item.url, item.title, usable ? item.published : null);
+        const known = rows.find((row) => row.guid === item.guid) ?? rows.find((row) => !current.has(row.guid));
+        const kept = known ? undefined : item.url && page.get(item.url);
+        if (known) update.run(item.guid, item.url, item.title, item.text, known.id);
+        else if (kept)
+          adopt.run(source.id, item.guid, item.url, published, item.title, item.text, backlog, now, kept.id);
+        else insert.run(source.id, item.guid, item.url, published, now, backlog, item.title, item.text);
       }
       const failed = !!result.error;
       this.db.run(
