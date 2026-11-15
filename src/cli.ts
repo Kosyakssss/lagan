@@ -1,12 +1,17 @@
-// The command line: everything the app does, without the app. It works on
-// the same database while the app runs; the app picks up feeds added here the
-// next time it is opened. Lists print as JSON.
+#!/usr/bin/env bun
+// The command line: everything the app does, without the app, and restarting
+// it. It works on the same database while the app runs; the app picks up feeds
+// added here the next time it is opened. Lists print as JSON.
 import { parseArgs } from 'node:util';
 import { displayTitle } from './lib/format';
 import { errorText, fetchSource } from './lib/server/fetch';
 import { readOpml, sourceFor, writeOpml } from './lib/server/opml';
+import { DATABASE } from './lib/server/lagan';
 import { findFeed } from './lib/server/sites';
 import { Store, type Source } from './lib/server/store';
+
+// The app as it runs at login, kept running by launchd.
+const AGENT = 'org.sk.lagan';
 
 const USAGE = `lagan entries  [--kept]               entries, newest first
 lagan keep     <entry id>...          keep entries
@@ -20,14 +25,15 @@ lagan mutes    <feed id> [word]...    its muted words, or set them: entries with
 lagan cuts     <feed id> [text]...    its cuts, or set them: taken out of its titles ("" for none)
 lagan opml     export | import <file>
 lagan check                           fetch every feed, without saving, and report
+lagan restart                         restart the app where it runs at login (launch agent ${AGENT})
 
-Every command takes --db <path>, data/lagan.sqlite by default.`;
+Every command takes --db <path>, the app's own database by default.`;
 
 const { values, positionals } = parseArgs({
   args: process.argv.slice(2),
   allowPositionals: true,
   options: {
-    db: { type: 'string', default: 'data/lagan.sqlite' },
+    db: { type: 'string', default: DATABASE },
     kept: { type: 'boolean', default: false },
   },
 });
@@ -132,6 +138,13 @@ async function check(): Promise<void> {
   console.log(`\n${lines.length} feeds, ${failed} failed, ${sum('items')} items, ${sum('fresh')} new`);
 }
 
+function restart(): void {
+  const agent = `gui/${process.getuid!()}/${AGENT}`;
+  const { exitCode, stderr } = Bun.spawnSync(['launchctl', 'kickstart', '-k', agent]);
+  if (exitCode) throw new Error(`Couldn’t restart ${agent}: ${stderr.toString().trim()}`);
+  console.log('Restarted Lagan');
+}
+
 const commands: Record<string, () => void | Promise<void>> = {
   entries: () => print(store.export(values.kept)),
   keep: keeping(true),
@@ -161,6 +174,7 @@ const commands: Record<string, () => void | Promise<void>> = {
   },
   opml,
   check,
+  restart,
 };
 
 const run = commands[command ?? ''];

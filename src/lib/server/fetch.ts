@@ -300,30 +300,46 @@ export function earliestAfter(result: FetchResult, failures: number): number {
 export const restFor = (quietFor: number, earliest: number) =>
   Math.max(earliest, clamp(quietFor / QUIET_FACTOR, QUIET_MAX));
 
-type Loop = { wake?: () => void; earliest: number };
+type Loop = { wake?: () => void; earliest: number; asked?: boolean };
 
 export class Fetcher {
   private loops = new Map<number, Loop>();
   private hostNext = new Map<string, number>();
   private lastNudge = 0;
+  private waiting = new Map<number, (() => void)[]>();
 
   constructor(private store: Store) {}
 
   // Keeps every feed fetched, including any added since, from the command line.
   startAll(): void {
-    for (const source of this.store.sources()) if (!this.loops.has(source.id)) this.start(source.id);
+    for (const source of this.store.sources()) if (!this.loops.has(source.id)) void this.start(source.id);
   }
 
   // Keeps one feed fetched from now on, until it is removed. A feed already
   // kept fetched, followed again or given a new address, is fetched now.
-  start(id: number): void {
+  // Answers once that fetch is saved.
+  start(id: number): Promise<void> {
+    const fetched = new Promise<void>((resolve) => this.waiting.set(id, [...(this.waiting.get(id) ?? []), resolve]));
     const running = this.loops.get(id);
-    if (running) return void running.wake?.();
+    if (running) {
+      if (running.wake) running.asked = true;
+      running.wake?.();
+      return fetched;
+    }
     const loop: Loop = { earliest: 0 };
     this.loops.set(id, loop);
     void this.run(id, loop)
       .catch((error) => console.error(`Feed ${id}: ${errorText(error)}`)) // one bad feed never stops the app
-      .finally(() => this.loops.delete(id));
+      .finally(() => {
+        this.loops.delete(id);
+        this.fetched(id);
+      });
+    return fetched;
+  }
+
+  private fetched(id: number): void {
+    for (const resolve of this.waiting.get(id) ?? []) resolve();
+    this.waiting.delete(id);
   }
 
   // Opening the app wakes every feed that is allowed to fetch again.
@@ -375,10 +391,13 @@ export class Fetcher {
       } catch (error) {
         console.error(`Feed ${source.label}: ${errorText(error)}`);
       }
+      this.fetched(id);
       const asleep = wait + spread(WAIT_SPREAD);
       const started = Date.now();
-      if (await this.rest(loop, asleep)) await sleep(spread(WAKE_SPREAD));
-      else if (Date.now() - started - asleep > WOKE_LATE) await sleep(spread(START_SPREAD)); // the Mac slept
+      const woken = await this.rest(loop, asleep);
+      if (woken && !loop.asked) await sleep(spread(WAKE_SPREAD)); // woken with every other feed: not all at once
+      else if (!woken && Date.now() - started - asleep > WOKE_LATE) await sleep(spread(START_SPREAD)); // the Mac slept
+      loop.asked = false;
     }
   }
 }

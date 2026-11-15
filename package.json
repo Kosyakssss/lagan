@@ -1,6 +1,9 @@
 {
   "name": "lagan",
   "private": true,
+  "bin": {
+    "lagan": "src/cli.ts"
+  },
   "type": "module",
   "imports": {
     "#lib/*": "./src/lib/*"

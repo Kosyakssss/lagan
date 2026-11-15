@@ -15,6 +15,10 @@ type Handler = (request: Bun.BunRequest) => Response | Promise<Response>;
 
 const MOST_LINKS = 100;
 const MOST_FEEDS = 50;
+// How long following waits for a feed's first fetch, so its page has its
+// posts, before showing the page anyway.
+const FIRST_FETCH_WAIT = 10_000;
+const fetched = (done: Promise<void>) => Promise.race([done, Bun.sleep(FIRST_FETCH_WAIT)]);
 
 // htmx, named by what is in it, so that browsers can keep it for good.
 const htmx = await Bun.file(Bun.resolveSync('htmx.org/dist/htmx.min.js', import.meta.dir)).text();
@@ -172,7 +176,7 @@ export function app({ store, wake, follow }: Lagan, base = '') {
             const ref = typed.trim();
             const found = ref === founds[index] ? { kind: kinds[index]!, ref } : await findFeed(ref);
             const id = store.addSource(found.kind, found.ref, labels[index]?.trim() || found.ref);
-            follow(id);
+            await fetched(follow(id));
             return id;
           }),
         );
@@ -242,7 +246,7 @@ export function app({ store, wake, follow }: Lagan, base = '') {
           if (other && other.id !== source.id) return failed(`That is ${other.label}, followed already.`);
           if (found.ref !== source.ref) {
             store.readdress(source.id, found.kind, found.ref);
-            follow(source.id);
+            await fetched(follow(source.id));
           }
         }
         store.rename(source.id, typed.label || source.label);
@@ -288,7 +292,7 @@ export function app({ store, wake, follow }: Lagan, base = '') {
           return see(saying(at('/feeds'), 'That file could not be read as OPML.'));
         }
         const added = store.addSources(listed.flatMap((feed) => (URL.canParse(feed.url) ? [sourceFor(feed)] : [])));
-        for (const id of added) follow(id);
+        for (const id of added) void follow(id);
         return see(saying(at('/feeds'), `${listed.length} feeds in the file, ${added.length} new.`));
       },
     },

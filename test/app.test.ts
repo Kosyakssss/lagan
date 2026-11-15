@@ -6,6 +6,7 @@ import { app } from '../src/app';
 let store: Store;
 let server: ReturnType<typeof Bun.serve>;
 let woken = 0;
+let following: (id: number) => Promise<void>;
 
 const item = (guid: string, published: number, title = `Post ${guid}`): Item => ({
   guid,
@@ -38,7 +39,8 @@ beforeEach(() => {
     0,
   );
   woken = 0;
-  server = Bun.serve({ port: 0, ...app({ store, wake: () => woken++, follow: () => {} }, '/lagan') });
+  following = async () => {};
+  server = Bun.serve({ port: 0, ...app({ store, wake: () => woken++, follow: (id) => following(id) }, '/lagan') });
 });
 
 afterEach(() => server.stop(true));
@@ -163,6 +165,22 @@ test('following what was looked over adds each feed under the name it was given'
   });
   expect(response.headers.get('location')).toContain('/lagan/feeds?said=Following%202.');
   expect(store.sources().map((source) => source.label)).toEqual(['Alpha', 'Example', 'https://b.example/feed']);
+});
+
+test('following one feed waits for its first fetch, so its page opens with its posts', async () => {
+  following = async (id) => {
+    await Bun.sleep(20);
+    store.save(store.source(id)!, { items: [item('first', Date.UTC(2026, 0, 4))] }, 0, 0);
+  };
+  const form = new URLSearchParams({
+    kind: 'rss',
+    found: 'https://a.example/feed',
+    ref: 'https://a.example/feed',
+    label: 'Alpha',
+  });
+  const followed = await post('/feeds', Object.fromEntries(form));
+  const page = await (await get(followed.headers.get('location')!.replace('/lagan', ''))).text();
+  expect(page).toContain('Post first');
 });
 
 test("a feed's edit saves its name and settings at once, and a failed one comes back open with what was typed", async () => {
