@@ -29,14 +29,16 @@ export type Entry = {
   text: string; // only filled in for untitled entries, the only rows that show it
 };
 
-export type Scope = { where: string; args?: SQLQueryBindings[]; limit?: number };
+// Entries are listed newest first: by when they were posted, or for the home
+// page, by when they arrived, so a post that turns up late is still seen.
+export type Scope = { where: string; args?: SQLQueryBindings[]; limit?: number; arrived?: true };
 
 // Entries whose title has one of their feed's muted words in it.
 const NOT_MUTED = `NOT EXISTS (SELECT 1 FROM mutes m WHERE m.source_id = entries.source_id AND instr(lower(entries.title), m.word) > 0)`;
 
 export const scopes = {
-  // The newest hundred, leaving out the backlog and what is muted.
-  latest: { where: `backlog = 0 AND ${NOT_MUTED}`, limit: 100 },
+  // The hundred that arrived last, leaving out the backlog and what is muted.
+  latest: { where: `backlog = 0 AND ${NOT_MUTED}`, limit: 100, arrived: true },
   kept: { where: 'kept = 1' },
   feed: (id: number): Scope => ({ where: 'source_id = ?', args: [id], limit: 100 }),
 } satisfies Record<string, Scope | ((id: number) => Scope)>;
@@ -61,6 +63,7 @@ CREATE TABLE IF NOT EXISTS entries (
   guid TEXT NOT NULL,
   url TEXT NOT NULL,
   published_at INTEGER NOT NULL,
+  arrived_at INTEGER NOT NULL DEFAULT 0, -- when it was first fetched
   backlog INTEGER NOT NULL DEFAULT 0 CHECK (backlog IN (0, 1)), -- from before the feed was followed: only on its own page
   kept INTEGER NOT NULL DEFAULT 0 CHECK (kept IN (0, 1)),
   title TEXT NOT NULL DEFAULT '',
@@ -78,7 +81,7 @@ CREATE TABLE IF NOT EXISTS cuts (
 ) STRICT;
 CREATE UNIQUE INDEX IF NOT EXISTS source_guid ON entries(source_id, guid) WHERE guid <> '';
 CREATE UNIQUE INDEX IF NOT EXISTS source_url ON entries(source_id, url) WHERE url <> '';
-CREATE INDEX IF NOT EXISTS latest ON entries(published_at DESC, id DESC) WHERE backlog = 0;
+CREATE INDEX IF NOT EXISTS arrived ON entries(arrived_at DESC, published_at DESC, id DESC) WHERE backlog = 0;
 CREATE INDEX IF NOT EXISTS kept ON entries(published_at DESC, id DESC) WHERE kept = 1;
 CREATE INDEX IF NOT EXISTS by_source ON entries(source_id, published_at DESC, id DESC);
 `;
@@ -141,6 +144,13 @@ export class Store {
         .all()
         .map((column) => column.name),
     );
+    if (columns.has('backlog') && !columns.has('arrived_at'))
+      // From before arrivals were noted: what was there arrived when it was posted.
+      this.db.transaction(() => {
+        this.db.run('ALTER TABLE entries ADD COLUMN arrived_at INTEGER NOT NULL DEFAULT 0');
+        this.db.run('UPDATE entries SET arrived_at = published_at');
+        this.db.run('DROP INDEX IF EXISTS latest');
+      })();
     if (!columns.size || columns.has('backlog')) return void this.db.run(SCHEMA);
     const kept = columns.has('bookmarked') ? 'bookmarked' : `state = 'bookmarked'`;
     const sources = this.db.query<{ sql: string }, []>(`SELECT sql FROM sqlite_master WHERE name = 'sources'`).get();
@@ -158,8 +168,8 @@ export class Store {
       this.db.run(SCHEMA);
       if (oldSources) this.db.run('INSERT INTO sources SELECT * FROM sources_old');
       this.db.run(
-        `INSERT INTO entries (id, source_id, guid, url, published_at, backlog, kept, title, text)
-         SELECT id, source_id, guid, url, published_at, state = 'none', ${kept}, title, text FROM entries_old`,
+        `INSERT INTO entries (id, source_id, guid, url, published_at, arrived_at, backlog, kept, title, text)
+         SELECT id, source_id, guid, url, published_at, published_at, state = 'none', ${kept}, title, text FROM entries_old`,
       );
       this.db.run('DROP TABLE entries_old');
       if (oldSources) this.db.run('DROP TABLE sources_old');
@@ -236,7 +246,7 @@ export class Store {
     );
     const repoint = this.db.query('UPDATE OR IGNORE entries SET guid = ?, url = ? WHERE id = ?');
     const insert = this.db.query(
-      `INSERT OR IGNORE INTO entries (source_id, guid, url, published_at, backlog, title, text) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT OR IGNORE INTO entries (source_id, guid, url, published_at, arrived_at, backlog, title, text) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     );
 
     this.db.transaction(() => {
@@ -251,7 +261,17 @@ export class Store {
         const usable =
           item.published !== null && item.published > EARLIEST_DATE && item.published <= now + DAY && !allSameDate;
         if (old) repoint.run(item.guid, item.url, old.id);
-        else insert.run(source.id, item.guid, item.url, usable ? item.published : now, backlog, item.title, item.text);
+        else
+          insert.run(
+            source.id,
+            item.guid,
+            item.url,
+            usable ? item.published : now,
+            now,
+            backlog,
+            item.title,
+            item.text,
+          );
       }
       const failed = !!result.error;
       this.db.run(
@@ -276,13 +296,14 @@ export class Store {
     return items.filter((item) => known.get(sourceId, item.guid, item.url, item.title, item.published ?? 0)).length;
   }
 
-  // Newest first.
   entries(scope: Scope): Entry[] {
     const limit = scope.limit ? `LIMIT ${scope.limit}` : '';
+    const order = (table = '') =>
+      `${scope.arrived ? `${table}arrived_at DESC, ` : ''}${table}published_at DESC, ${table}id DESC`;
     const rows = this.db
       .query<Entry, SQLQueryBindings[]>(
-        `SELECT ${ROW} FROM (SELECT * FROM entries WHERE ${scope.where} ORDER BY published_at DESC, id DESC ${limit}) e
-         JOIN sources s ON s.id = e.source_id ORDER BY e.published_at DESC, e.id DESC`,
+        `SELECT ${ROW} FROM (SELECT * FROM entries WHERE ${scope.where} ORDER BY ${order()} ${limit}) e
+         JOIN sources s ON s.id = e.source_id ORDER BY ${order('e.')}`,
       )
       .all(...(scope.args ?? []));
     return this.cut(rows);
@@ -339,11 +360,12 @@ export class Store {
       .query<{ id: number }, [string]>('SELECT id FROM entries WHERE url = ? ORDER BY id LIMIT 1')
       .get(url);
     if (known) return this.keep([known.id], true)[0]!;
+    const now = Date.now();
     const { id } = this.db
-      .query<{ id: number }, [number, string, string, number, string]>(
-        `INSERT INTO entries (source_id, guid, url, published_at, kept, title) VALUES (?, ?, ?, ?, 1, ?) RETURNING id`,
+      .query<{ id: number }, [number, string, string, number, number, string]>(
+        `INSERT INTO entries (source_id, guid, url, published_at, arrived_at, kept, title) VALUES (?, ?, ?, ?, ?, 1, ?) RETURNING id`,
       )
-      .get(this.siteSource(url), url, url, Date.now(), title)!;
+      .get(this.siteSource(url), url, url, now, now, title)!;
     return this.entry(id)!;
   }
 

@@ -131,14 +131,13 @@ p {
 
 .meta {
   display: flex;
-  gap: 1rem;
+  gap: 0.625rem;
   align-items: center;
   margin-block-start: 0.25rem;
   font-size: 0.875rem;
 }
 
 .from {
-  flex: 1;
   min-width: 0;
   overflow: hidden;
   color: var(--tx);
@@ -149,6 +148,11 @@ p {
 
 .from:hover {
   text-decoration: underline;
+}
+
+.meta time {
+  flex: none;
+  font-variant-numeric: tabular-nums;
 }
 
 /* Keep is a word; kept is the word filled in, as a pill the size of the

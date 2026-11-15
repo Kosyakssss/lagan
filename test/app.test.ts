@@ -50,6 +50,7 @@ test('the home page lists new posts but not the backlog, and opening it wakes th
   const page = await (await get('/')).text();
   expect(page).toContain('Post fresh');
   expect(page).not.toContain('Post backlog');
+  expect(page).toContain('<time datetime="2026-01-02T00:00:00.000Z">');
   expect(woken).toBe(1);
 });
 
@@ -101,6 +102,7 @@ test('a change posted from another site is refused', async () => {
 test("a feed's page has its backlog too, and its muted words are saved cleaned up", async () => {
   const page = await (await get('/feed/1')).text();
   expect(page).toContain('Post backlog');
+  expect(page).toContain('<time datetime="2026-01-01T00:00:00.000Z">');
   const saved = await edit({ mutes: ' Sponsored, ad ,,' });
   expect(saved.headers.get('location')).toBe('/lagan/feed/1');
   expect(store.mutes(1)).toEqual(['ad', 'sponsored']);

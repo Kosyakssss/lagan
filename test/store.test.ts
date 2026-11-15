@@ -1,5 +1,5 @@
 import { Database } from 'bun:sqlite';
-import { beforeEach, expect, test } from 'bun:test';
+import { afterEach, beforeEach, expect, setSystemTime, test } from 'bun:test';
 import type { FetchResult } from '../src/lib/server/fetch';
 import type { Item } from '../src/lib/server/parse';
 import { scopes, Store, type Source } from '../src/lib/server/store';
@@ -7,6 +7,7 @@ import { scopes, Store, type Source } from '../src/lib/server/store';
 let store: Store;
 let feed: Source;
 const JAN = Date.UTC(2026, 0, 1);
+const DAY = 86_400_000;
 
 const item = (guid: string, overrides: Partial<Item> = {}): Item => ({
   guid,
@@ -24,6 +25,8 @@ const saveItems = (...items: Item[]) => {
 };
 const titles = (scope: Parameters<Store['entries']>[0]) => store.entries(scope).map((entry) => entry.title);
 
+afterEach(() => setSystemTime());
+
 beforeEach(() => {
   store = new Store(':memory:');
   store.addSource('rss', 'https://example.com/feed', 'Example');
@@ -37,6 +40,16 @@ test("a feed's first fetch is backlog, kept off the home page; later posts are o
 
   saveItems(item('new', { published: JAN + 1000 }));
   expect(titles(scopes.latest)).toEqual(['Post new']);
+});
+
+test("the home page puts what arrived last first, even a post dated earlier; a feed's page keeps the dates' order", () => {
+  saveItems(item('backlog'));
+  setSystemTime(JAN + 10 * DAY);
+  saveItems(item('first', { published: JAN + 9 * DAY }));
+  setSystemTime(JAN + 11 * DAY);
+  saveItems(item('late', { published: JAN + 2 * DAY }), item('later', { published: JAN + 3 * DAY }));
+  expect(titles(scopes.latest)).toEqual(['Post later', 'Post late', 'Post first']);
+  expect(titles(scopes.feed(feed.id))).toEqual(['Post first', 'Post later', 'Post late', 'Post backlog']);
 });
 
 test('fetching the same item twice changes nothing', () => {
@@ -237,6 +250,28 @@ test('a database from when entries had a read state and bookmarked was a column,
       ['Kept post', null],
     ]);
     expect(migrated.entries(scopes.latest).map((entry) => entry.title)).toEqual(['Video', 'Kept post']);
+  } finally {
+    for (const suffix of ['', '-wal', '-shm'])
+      Bun.file(path + suffix)
+        .delete()
+        .catch(() => {});
+  }
+});
+
+test('a database from before arrivals were noted lists what it has as before, and what arrives next first', () => {
+  const path = `${Bun.env.TMPDIR ?? '/tmp'}/lagan-arrivals-${process.pid}.sqlite`;
+  const old = new Database(path, { create: true });
+  old.run(`CREATE TABLE sources (id INTEGER PRIMARY KEY, kind TEXT NOT NULL CHECK (kind IN ('rss', 'atproto', 'page')), ref TEXT NOT NULL UNIQUE, label TEXT NOT NULL, folder TEXT NOT NULL DEFAULT '', etag TEXT NOT NULL DEFAULT '', last_modified TEXT NOT NULL DEFAULT '', fetched_at INTEGER, next_at INTEGER, failures INTEGER NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '') STRICT;
+    CREATE TABLE entries (id INTEGER PRIMARY KEY, source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE, guid TEXT NOT NULL, url TEXT NOT NULL, published_at INTEGER NOT NULL, backlog INTEGER NOT NULL DEFAULT 0 CHECK (backlog IN (0, 1)), kept INTEGER NOT NULL DEFAULT 0 CHECK (kept IN (0, 1)), title TEXT NOT NULL DEFAULT '', text TEXT NOT NULL DEFAULT '') STRICT;
+    CREATE INDEX latest ON entries(published_at DESC, id DESC) WHERE backlog = 0;
+    INSERT INTO sources (id, kind, ref, label, fetched_at) VALUES (1, 'rss', 'https://example.com/feed', 'Example', 1);
+    INSERT INTO entries (source_id, guid, url, published_at, title) VALUES (1, 'a', 'https://example.com/a', ${JAN + 2 * DAY}, 'Newer'), (1, 'b', 'https://example.com/b', ${JAN + DAY}, 'Older');`);
+  old.close();
+  try {
+    const migrated = new Store(path);
+    expect(migrated.entries(scopes.latest).map((entry) => entry.title)).toEqual(['Newer', 'Older']);
+    migrated.save(migrated.source(1)!, result(item('late', { published: JAN })), 0, 0);
+    expect(migrated.entries(scopes.latest).map((entry) => entry.title)).toEqual(['Post late', 'Newer', 'Older']);
   } finally {
     for (const suffix of ['', '-wal', '-shm'])
       Bun.file(path + suffix)

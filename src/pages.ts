@@ -2,7 +2,7 @@
 // cached after the first page, saves keep and search as it is typed from
 // reloading the page; each still works as a plain form without it. Links
 // that leave the app open in a new tab.
-import { displayTitle } from '#lib/format.ts';
+import { dateLabel, displayTitle } from '#lib/format.ts';
 import { html, raw, type Html, type Part } from '#lib/html.ts';
 import type { Entry, Source } from '#lib/server/store.ts';
 
@@ -130,8 +130,8 @@ export function pages(base: string, htmx: string) {
     </form>`;
   }
 
-  // Entries, each with where it is from: its feed's page, or for a page kept
-  // from its link, its site.
+  // Entries, each with where it is from (its feed's page, or for a page kept
+  // from its link, its site) and when it was posted.
   const entries = (list: Entry[], empty: string) =>
     list.length
       ? html`<ol class="entries">
@@ -144,7 +144,8 @@ export function pages(base: string, htmx: string) {
                     entry.site
                       ? out(`https://${entry.site}/`, entry.feed, html`class="from"`)
                       : html`<a class="from" href="${at(`/feed/${entry.source_id}`)}">${entry.feed}</a>`
-                  }${keep(entry)}
+                  }<time datetime="${new Date(entry.published_at).toISOString()}">${dateLabel(entry.published_at)}</time
+                  >${keep(entry)}
                 </div>
               </li>`,
           )}
