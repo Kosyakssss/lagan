@@ -129,6 +129,13 @@ p {
   text-decoration-color: var(--bg); /* a visited link may change only colours, so its line fades into the page */
 }
 
+/* Under a pointer, a visited link shows its line again. */
+@media (hover: hover) {
+  .entries li > a:visited:hover {
+    text-decoration-color: currentColor;
+  }
+}
+
 .meta {
   display: flex;
   gap: 0.625rem;
