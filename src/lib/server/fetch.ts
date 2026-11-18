@@ -11,7 +11,6 @@ export type FetchResult = {
   etag?: string;
   lastModified?: string;
   retryAfter?: number;
-  maxAge?: number;
 };
 
 const SECOND = 1000;
@@ -22,7 +21,6 @@ const BASE = 5 * MINUTE;
 const QUIET_MAX = HOUR;
 const QUIET_FACTOR = 48;
 const MAX_WAIT = 6 * HOUR;
-const MAX_AGE_MAX = HOUR;
 const WAKE_SPREAD = 5 * SECOND;
 const SAME_HOST_GAP = SECOND;
 const START_SPREAD = MINUTE;
@@ -125,21 +123,13 @@ function retryAfter(value: string | null): number | undefined {
   return Number.isNaN(date) ? undefined : date - Date.now();
 }
 
-function maxAge(value: string | null): number | undefined {
-  const match = /max-age=(\d+)/i.exec(value ?? '');
-  return match ? Number(match[1]) * SECOND : undefined;
-}
-
 async function fetchRss(source: Pick<Source, 'ref' | 'etag' | 'last_modified'>): Promise<FetchResult> {
   const headers: Record<string, string> = { Accept: ACCEPT };
   if (source.etag) headers['If-None-Match'] = source.etag;
   if (source.last_modified) headers['If-Modified-Since'] = source.last_modified;
   try {
     const response = await safeFetch(source.ref, headers);
-    const timing = {
-      retryAfter: retryAfter(response.headers.get('retry-after')),
-      maxAge: maxAge(response.headers.get('cache-control')),
-    };
+    const timing = { retryAfter: retryAfter(response.headers.get('retry-after')) };
     if (response.status === 304) {
       await response.body?.cancel();
       return { items: [], etag: source.etag, lastModified: source.last_modified, ...timing };
@@ -291,31 +281,26 @@ const clamp = (value: number, ceiling = MAX_WAIT) => Math.min(Math.max(value, BA
 const spread = (limit: number) => Math.random() * limit;
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, Math.max(0, ms)));
 
-// A cache header is a hint, so it holds a feed back an hour at most; Retry-After
-// and failing are the server asking us to stay away, for up to 6 hours.
-const backedOff = (result: FetchResult) => (result.retryAfter ?? 0) > 0 || !!result.error;
-
+// How long a server keeps us away: what its Retry-After says, or longer after
+// each failure in a row, up to 6 hours. A feed that answered keeps nobody away.
 export function earliestAfter(result: FetchResult, failures: number): number {
   if (result.retryAfter && result.retryAfter > 0) return clamp(result.retryAfter);
   if (result.error) return Math.min(BASE * 2 ** failures, MAX_WAIT);
-  return clamp(result.maxAge ?? BASE, MAX_AGE_MAX);
+  return BASE;
 }
-
-// How soon opening the app may fetch a feed again: past any cache header, but
-// never sooner than a server that asked us to stay away allows.
-export const wakeableAfter = (result: FetchResult, failures: number) =>
-  backedOff(result) ? earliestAfter(result, failures) : BASE;
 
 // A feed silent for two days is fetched hourly, one that posted today every few minutes.
 export const restFor = (quietFor: number, earliest: number) =>
   Math.max(earliest, clamp(quietFor / QUIET_FACTOR, QUIET_MAX));
 
-type Loop = { wake?: () => void; earliest: number; asked?: boolean };
+// Why a resting feed fetches: its time came, it was followed again or moved,
+// or the app was opened.
+type Why = 'due' | 'asked' | 'check';
+type Loop = { wake?: (why: Why) => void };
 
 export class Fetcher {
   private loops = new Map<number, Loop>();
   private hostNext = new Map<string, number>();
-  private lastNudge = 0;
   private waiting = new Map<number, (() => void)[]>();
 
   constructor(private store: Store) {}
@@ -332,11 +317,10 @@ export class Fetcher {
     const fetched = new Promise<void>((resolve) => this.waiting.set(id, [...(this.waiting.get(id) ?? []), resolve]));
     const running = this.loops.get(id);
     if (running) {
-      if (running.wake) running.asked = true;
-      running.wake?.();
+      running.wake?.('asked');
       return fetched;
     }
-    const loop: Loop = { earliest: 0 };
+    const loop: Loop = {};
     this.loops.set(id, loop);
     void this.run(id, loop)
       .catch((error) => console.error(`Feed ${id}: ${errorText(error)}`)) // one bad feed never stops the app
@@ -352,14 +336,15 @@ export class Fetcher {
     this.waiting.delete(id);
   }
 
-  // Opening the app wakes every feed that is allowed to fetch again, even one
-  // whose cache header asked for a longer wait.
-  nudge(): void {
+  // Opening the app checks every feed once, so a reload shows what came in.
+  // Not one fetched in the last 5 minutes, or one whose last fetch failed: that
+  // one waits as long as its server asked. A check moves a feed's next fetch
+  // only when it brings a new post.
+  check(): void {
     this.startAll();
     const now = Date.now();
-    if (now - this.lastNudge < BASE) return;
-    this.lastNudge = now;
-    for (const loop of this.loops.values()) if (now >= loop.earliest) loop.wake?.();
+    for (const source of this.store.sources())
+      if (!source.error && now - (source.fetched_at ?? 0) >= BASE) this.loops.get(source.id)?.wake?.('check');
   }
 
   private async turn(host: string): Promise<void> {
@@ -368,47 +353,56 @@ export class Fetcher {
     await sleep(start - Date.now());
   }
 
-  private rest(loop: Loop, ms: number): Promise<boolean> {
+  private rest(loop: Loop, until: number): Promise<Why> {
     return new Promise((resolve) => {
-      const timer = setTimeout(() => {
-        loop.wake = undefined;
-        resolve(false);
-      }, ms);
-      loop.wake = () => {
+      const done = (why: Why) => {
         clearTimeout(timer);
         loop.wake = undefined;
-        resolve(true);
+        resolve(why);
       };
+      const timer = setTimeout(() => done('due'), Math.max(0, until - Date.now()));
+      loop.wake = done;
     });
   }
 
   private async run(id: number, loop: Loop): Promise<void> {
     const first = this.store.source(id);
-    if (first?.fetched_at != null)
-      await this.rest(loop, Math.max(0, (first.next_at ?? 0) - Date.now()) + spread(START_SPREAD));
+    let due = Date.now();
+    let why: Why = 'due';
+    if (first?.fetched_at != null) {
+      due = Math.max(due, first.next_at ?? 0) + spread(START_SPREAD);
+      why = await this.rest(loop, due);
+    }
     for (;;) {
       const source = this.store.source(id);
       if (!source) return;
+      if (why === 'check') await sleep(spread(WAKE_SPREAD)); // with every other feed: not all at once
       await this.turn(source.kind === 'atproto' ? 'atproto' : new URL(source.ref).hostname);
       const result = await fetchSource(source);
-      if (this.store.source(id)?.ref !== source.ref) continue; // given a new address meanwhile: fetch that now
-      const failures = result.error ? source.failures + 1 : 0;
-      const earliest = earliestAfter(result, failures);
-      loop.earliest = Date.now() + wakeableAfter(result, failures);
-      const quietFor = source.kind === 'atproto' ? 0 : Date.now() - this.store.lastPost(id);
-      const wait = restFor(quietFor, earliest);
-      try {
-        this.store.save(source, result, failures, Date.now() + wait);
-      } catch (error) {
-        console.error(`Feed ${source.label}: ${errorText(error)}`);
+      if (this.store.source(id)?.ref !== source.ref) {
+        why = 'asked'; // given a new address meanwhile: fetch that now
+        continue;
+      }
+      const checked = why === 'check';
+      if (!(checked && result.error)) {
+        // a check that failed is forgotten: the feed's own fetch will tell
+        const failures = result.error ? source.failures + 1 : 0;
+        const before = this.store.lastPost(id);
+        try {
+          this.store.save(source, result, failures, due);
+          const last = this.store.lastPost(id);
+          if (!checked || last > before) {
+            const quietFor = source.kind === 'atproto' ? 0 : Date.now() - last;
+            due = Date.now() + restFor(quietFor, earliestAfter(result, failures)) + spread(WAIT_SPREAD);
+            this.store.schedule(id, due);
+          }
+        } catch (error) {
+          console.error(`Feed ${source.label}: ${errorText(error)}`);
+        }
       }
       this.fetched(id);
-      const asleep = wait + spread(WAIT_SPREAD);
-      const started = Date.now();
-      const woken = await this.rest(loop, asleep);
-      if (woken && !loop.asked) await sleep(spread(WAKE_SPREAD)); // woken with every other feed: not all at once
-      else if (!woken && Date.now() - started - asleep > WOKE_LATE) await sleep(spread(START_SPREAD)); // the Mac slept
-      loop.asked = false;
+      why = await this.rest(loop, due);
+      if (why === 'due' && Date.now() - due > WOKE_LATE) await sleep(spread(START_SPREAD)); // the Mac slept
     }
   }
 }

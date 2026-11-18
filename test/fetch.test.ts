@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { earliestAfter, readLimited, restFor, wakeableAfter } from '../src/lib/server/fetch';
+import { earliestAfter, readLimited, restFor } from '../src/lib/server/fetch';
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -7,17 +7,6 @@ const DAY = 24 * HOUR;
 
 test('a healthy feed is asked again after 5 minutes', () => {
   expect(earliestAfter({ items: [] }, 0)).toBe(5 * MINUTE);
-});
-
-test('a feed can ask for longer with its cache header, up to an hour', () => {
-  expect(earliestAfter({ items: [], maxAge: 30 * MINUTE }, 0)).toBe(30 * MINUTE);
-  expect(earliestAfter({ items: [], maxAge: 3 * HOUR }, 0)).toBe(HOUR);
-});
-
-test('opening the app may fetch past a cache header, but not past Retry-After or a failure', () => {
-  expect(wakeableAfter({ items: [], maxAge: 3 * HOUR }, 0)).toBe(5 * MINUTE);
-  expect(wakeableAfter({ items: [], error: 'HTTP 429', retryAfter: 2 * HOUR }, 1)).toBe(2 * HOUR);
-  expect(wakeableAfter({ items: [], error: 'x' }, 2)).toBe(20 * MINUTE);
 });
 
 test('Retry-After is respected', () => {
@@ -36,7 +25,7 @@ test('quiet feeds rest longer, up to an hour', () => {
   expect(restFor(10 * DAY, 5 * MINUTE)).toBe(HOUR);
 });
 
-test('a longer wait the feed asked for still wins over quiet pacing', () => {
+test('a server keeping us away still wins over quiet pacing', () => {
   expect(restFor(HOUR, 3 * HOUR)).toBe(3 * HOUR);
 });
 

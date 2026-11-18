@@ -20,5 +20,5 @@ export function start(): Lagan {
   if (removed) console.log(`Merged ${removed} copies of moved posts`);
   const fetcher = new Fetcher(store);
   fetcher.startAll();
-  return (globals.lagan = { store, wake: () => fetcher.nudge(), follow: (id) => fetcher.start(id) });
+  return (globals.lagan = { store, wake: () => fetcher.check(), follow: (id) => fetcher.start(id) });
 }

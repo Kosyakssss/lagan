@@ -239,6 +239,11 @@ export class Store {
     );
   }
 
+  // When to fetch a feed next.
+  schedule(id: number, at: number): void {
+    this.db.run('UPDATE sources SET next_at = ? WHERE id = ?', [Math.round(at), id]);
+  }
+
   // Stores a fetch: its entries, and when to fetch next. A post the feed
   // brings again takes the link, title and text the feed gives it now, so a
   // post renamed or corrected shows as it is.
