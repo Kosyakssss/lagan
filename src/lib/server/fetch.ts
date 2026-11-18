@@ -22,6 +22,7 @@ const BASE = 5 * MINUTE;
 const QUIET_MAX = HOUR;
 const QUIET_FACTOR = 48;
 const MAX_WAIT = 6 * HOUR;
+const MAX_AGE_MAX = HOUR;
 const WAKE_SPREAD = 5 * SECOND;
 const SAME_HOST_GAP = SECOND;
 const START_SPREAD = MINUTE;
@@ -290,11 +291,20 @@ const clamp = (value: number, ceiling = MAX_WAIT) => Math.min(Math.max(value, BA
 const spread = (limit: number) => Math.random() * limit;
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, Math.max(0, ms)));
 
+// A cache header is a hint, so it holds a feed back an hour at most; Retry-After
+// and failing are the server asking us to stay away, for up to 6 hours.
+const backedOff = (result: FetchResult) => (result.retryAfter ?? 0) > 0 || !!result.error;
+
 export function earliestAfter(result: FetchResult, failures: number): number {
   if (result.retryAfter && result.retryAfter > 0) return clamp(result.retryAfter);
   if (result.error) return Math.min(BASE * 2 ** failures, MAX_WAIT);
-  return clamp(result.maxAge ?? BASE);
+  return clamp(result.maxAge ?? BASE, MAX_AGE_MAX);
 }
+
+// How soon opening the app may fetch a feed again: past any cache header, but
+// never sooner than a server that asked us to stay away allows.
+export const wakeableAfter = (result: FetchResult, failures: number) =>
+  backedOff(result) ? earliestAfter(result, failures) : BASE;
 
 // A feed silent for two days is fetched hourly, one that posted today every few minutes.
 export const restFor = (quietFor: number, earliest: number) =>
@@ -342,7 +352,8 @@ export class Fetcher {
     this.waiting.delete(id);
   }
 
-  // Opening the app wakes every feed that is allowed to fetch again.
+  // Opening the app wakes every feed that is allowed to fetch again, even one
+  // whose cache header asked for a longer wait.
   nudge(): void {
     this.startAll();
     const now = Date.now();
@@ -383,7 +394,7 @@ export class Fetcher {
       if (this.store.source(id)?.ref !== source.ref) continue; // given a new address meanwhile: fetch that now
       const failures = result.error ? source.failures + 1 : 0;
       const earliest = earliestAfter(result, failures);
-      loop.earliest = Date.now() + earliest;
+      loop.earliest = Date.now() + wakeableAfter(result, failures);
       const quietFor = source.kind === 'atproto' ? 0 : Date.now() - this.store.lastPost(id);
       const wait = restFor(quietFor, earliest);
       try {
