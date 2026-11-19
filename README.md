@@ -14,7 +14,7 @@ Lagan is a feed tracker for one person. It follows RSS, Atom and JSON feeds, You
 
 It's one Bun process and one SQLite file, with no build step.
 
-![Lagan on a desktop and a phone: the newest posts from blogs, a YouTube channel and a Bluesky account, and what was kept](docs/screenshot.png)
+![Lagan on a desktop and a phone: the newest posts from the feeds it follows, two kept and two already opened](docs/screenshot.png)
 
 ## Installation
 
