@@ -26,7 +26,8 @@ const htmxName = `/htmx.${Bun.hash(htmx).toString(36)}.js`;
 
 // The app's icon, Kote's crow on its buoy (from his drawing), on the app's blue:
 // a small one for browser tabs, a larger one for a phone's home screen. Named by
-// what is in them too.
+// what is in them too. Both are art/crow/head-icon.svg: the crow's head, cut free
+// of the buoy, from Kote's drawing (the rest of it is in art/crow too).
 const icons = await Promise.all(
   ['favicon', 'apple-touch-icon'].map(async (name) => {
     const bytes = await Bun.file(new URL(`./icon/${name}.png`, import.meta.url)).bytes();
