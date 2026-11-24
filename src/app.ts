@@ -24,6 +24,17 @@ const fetched = (done: Promise<void>) => Promise.race([done, Bun.sleep(FIRST_FET
 const htmx = await Bun.file(Bun.resolveSync('htmx.org/dist/htmx.min.js', import.meta.dir)).text();
 const htmxName = `/htmx.${Bun.hash(htmx).toString(36)}.js`;
 
+// The app's icon, Kote's crow on its buoy (from his drawing), on the app's blue:
+// a small one for browser tabs, a larger one for a phone's home screen. Named by
+// what is in them too.
+const icons = await Promise.all(
+  ['favicon', 'apple-touch-icon'].map(async (name) => {
+    const bytes = await Bun.file(new URL(`./icon/${name}.png`, import.meta.url)).bytes();
+    return { path: `/${name}.${Bun.hash(bytes).toString(36)}.png`, bytes };
+  }),
+);
+const [favicon, touchIcon] = icons as [(typeof icons)[0], (typeof icons)[0]];
+
 // A page on another site must not be able to change anything here.
 export function sameOrigin(request: Request): boolean {
   const site = request.headers.get('sec-fetch-site');
@@ -86,7 +97,7 @@ const query = (request: Request) => new URL(request.url).searchParams;
 // The app, served under `base`: '' or a path such as '/lagan'.
 export function app({ store, wake, follow }: Lagan, base = '') {
   const at = (path: string) => base + path;
-  const views = pages(base, at(htmxName));
+  const views = pages(base, at(htmxName), { favicon: at(favicon.path), touch: at(touchIcon.path) });
   const counts = () => ({ kept: store.keptCount(), feeds: store.sources().length });
   const missing = () => sent(views.missing(counts()), 404);
   const followed = (ref: string) => store.sources().find((source) => source.ref === ref);
@@ -318,6 +329,14 @@ export function app({ store, wake, follow }: Lagan, base = '') {
           'Cache-Control': 'public, max-age=31536000, immutable',
         },
       }),
+      ...Object.fromEntries(
+        icons.map(({ path, bytes }) => [
+          at(path),
+          new Response(bytes, {
+            headers: { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=31536000, immutable' },
+          }),
+        ]),
+      ),
     },
     fetch: guarded(missing) as (request: Request) => Promise<Response>,
   };

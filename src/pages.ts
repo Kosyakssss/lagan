@@ -54,8 +54,8 @@ const line = (name: keyof Edited, label: string, value: string, more: Part = '')
       ${more}
     />`;
 
-// The pages of an app served under `base`, with htmx at `htmx`.
-export function pages(base: string, htmx: string) {
+// The pages of an app served under `base`, with htmx at `htmx` and its icons at `icon`.
+export function pages(base: string, htmx: string, icon: { favicon: string; touch: string }) {
   const at = (path: string) => base + path;
   const feedAt = (source: Source, rest = '') => at(`/feed/${source.id}${rest}`);
 
@@ -93,6 +93,8 @@ export function pages(base: string, htmx: string) {
           <meta name="color-scheme" content="dark" />
           <meta name="theme-color" content="#205ea6" />
           <title>${title}</title>
+          <link rel="icon" href="${icon.favicon}" type="image/png" />
+          <link rel="apple-touch-icon" href="${icon.touch}" />
           <style>
             ${raw(css)}
           </style>
